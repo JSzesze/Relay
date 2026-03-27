@@ -6,11 +6,33 @@ const DEFAULT_PAGE_WIDTH = 1404;
 const DEFAULT_PAGE_HEIGHT = 1872;
 const PAPER_BACKGROUND = "#fcfbf7";
 const TEXT_TOP_Y = -88;
+const TEXT_WRAP_MARGIN = 236;
+const BULLET_SECTION_GAP = 30;
+const SCREEN_UNITS_PER_POINT = 226 / 72;
+const LINE_SEPARATOR = "\u2028";
 const TEXT_DOCUMENT_TOP_Y_CRDT_ID = 0xfffffffffffe;
 const TEXT_DOCUMENT_BOTTOM_Y_CRDT_ID = 0xffffffffffff;
+const V6_COLOR_MARKER_LENGTH = 6;
 
 const END_MARKER_KEY = "__end__";
 const START_MARKER_KEY = "__start__";
+
+const V6_TRAILING_RGBA_COLORS = new Map<string, number>([
+  ["255,237,117,255", 14],
+  ["190,234,254,255", 15],
+  ["242,158,255,255", 16],
+  ["255,195,140,255", 17],
+  ["172,255,133,255", 18],
+  ["199,199,198,255", 19],
+  ["33,30,28,64", 20],
+  ["254,178,0,115", 21],
+  ["192,127,210,128", 22],
+  ["48,74,224,77", 23],
+  ["194,49,50,102", 24],
+  ["145,218,113,128", 25],
+  ["250,231,25,115", 26],
+  ["116,210,232,102", 27],
+]);
 
 enum TagType {
   Id = 0x0f,
@@ -121,7 +143,37 @@ export interface RemarkableRmPage {
 }
 
 export interface RenderRemarkableRmSvgOptions {
-  viewport?: "content" | "page";
+  pageSize?: {
+    height: number;
+    width: number;
+  };
+  unitScale?: number;
+  viewport?: "content" | "page" | "frame";
+  transparentBackground?: boolean;
+}
+
+export interface RemarkableRmSvgGeometry {
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+  pageMinX: number;
+  pageMinY: number;
+  pageWidth: number;
+  pageHeight: number;
+}
+
+export interface RemarkableRmOverlayPlacement {
+  compositionWidth: number;
+  compositionHeight: number;
+  overlayX: number;
+  overlayY: number;
+  overlayWidth: number;
+  overlayHeight: number;
+  pageX: number;
+  pageY: number;
+  pageWidth: number;
+  pageHeight: number;
 }
 
 interface V6TreeNodeMeta {
@@ -161,6 +213,20 @@ interface SvgBounds {
   maxY: number;
 }
 
+interface V6ParagraphMetrics {
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  isListStyle: boolean;
+  itemSpacing: number;
+  lineHeight: number;
+  prefix: string;
+  softLineHeight: number;
+  spaceAfter: number;
+  textXOffset: number;
+  widthReduction: number;
+}
+
 class V6Reader {
   private readonly view: DataView;
   private readonly buffer: Buffer;
@@ -195,6 +261,19 @@ class V6Reader {
     const value = this.buffer.subarray(this.offset, end);
     this.offset = end;
     return value;
+  }
+
+  peekBytes(length: number) {
+    const end = this.offset + length;
+    if (end > this.buffer.length) {
+      throw new Error("Unexpected end of .rm page.");
+    }
+
+    return this.buffer.subarray(this.offset, end);
+  }
+
+  remainingBytes() {
+    return this.buffer.length - this.offset;
   }
 
   readBool() {
@@ -447,7 +526,47 @@ function mergeBounds(target: SvgBounds, source: SvgBounds) {
   includePoint(target, source.maxX, source.maxY);
 }
 
+function getConcreteStrokeColor(color: number) {
+  switch (color) {
+    case 14:
+      return "#ffed75";
+    case 15:
+      return "#beeafe";
+    case 16:
+      return "#f29eff";
+    case 17:
+      return "#ffc38c";
+    case 18:
+      return "#acff85";
+    case 19:
+      return "#c7c7c6";
+    case 20:
+      return "#211e1c";
+    case 21:
+      return "#feb200";
+    case 22:
+      return "#c07fd2";
+    case 23:
+      return "#304ae0";
+    case 24:
+      return "#c23132";
+    case 25:
+      return "#91da71";
+    case 26:
+      return "#fae719";
+    case 27:
+      return "#74d2e8";
+    default:
+      return null;
+  }
+}
+
 function getStrokeColor(color: number) {
+  const concreteColor = getConcreteStrokeColor(color);
+  if (concreteColor) {
+    return concreteColor;
+  }
+
   switch (color) {
     case 1:
       return "#7b7b7b";
@@ -482,6 +601,18 @@ function getStrokeColor(color: number) {
 
 function getHighlightColor(color: number) {
   switch (color) {
+    case 14:
+      return "#ffed75";
+    case 15:
+      return "#beeafe";
+    case 16:
+      return "#f29eff";
+    case 17:
+      return "#ffc38c";
+    case 18:
+      return "#acff85";
+    case 19:
+      return "#c7c7c6";
     case 4:
     case 10:
       return "#7bd88f";
@@ -531,6 +662,36 @@ function getPenWidthMultiplier(pen: number) {
     default:
       return 0.6;
   }
+}
+
+function tryReadTrailingRgbaColor(reader: V6Reader) {
+  if (reader.remainingBytes() < V6_COLOR_MARKER_LENGTH) {
+    return null;
+  }
+
+  const markerOffset = reader.tell();
+  const marker = reader.peekBytes(V6_COLOR_MARKER_LENGTH);
+  const prefix = marker[0];
+
+  if ((prefix !== 0xa4 && prefix !== 0x84) || marker[1] !== 0x01) {
+    return null;
+  }
+
+  reader.readBytes(2);
+  const blue = reader.readUint8();
+  const green = reader.readUint8();
+  const red = reader.readUint8();
+  const alpha = reader.readUint8();
+  const decodedColor = V6_TRAILING_RGBA_COLORS.get(
+    `${red},${green},${blue},${alpha}`,
+  );
+
+  if (decodedColor != null) {
+    return decodedColor;
+  }
+
+  reader.seek(markerOffset);
+  return null;
 }
 
 function getStrokeWidth(path: RemarkableRmPath) {
@@ -667,7 +828,7 @@ function readV6Point(reader: V6Reader, version: number) {
 
 function parseV6Line(reader: V6Reader, version: number) {
   const pen = reader.readInt(1);
-  const color = reader.readInt(2);
+  let color = reader.readInt(2);
   const baseWidth = reader.readDouble(3);
   reader.readFloat(4);
   const points = reader.readSubblock(5, (end) => {
@@ -683,6 +844,8 @@ function parseV6Line(reader: V6Reader, version: number) {
     reader.readId(7);
   }
 
+  color = tryReadTrailingRgbaColor(reader) ?? color;
+
   return {
     pen,
     color,
@@ -694,7 +857,7 @@ function parseV6Line(reader: V6Reader, version: number) {
 function parseV6GlyphRange(reader: V6Reader) {
   const start = reader.checkTag(2, TagType.Byte4) ? reader.readInt(2) : undefined;
   const length = reader.checkTag(3, TagType.Byte4) ? reader.readInt(3) : undefined;
-  const color = reader.readInt(4);
+  let color = reader.readInt(4);
   const text = reader.readString(5);
   const rectangles = reader.readSubblock(6, () => {
     const count = reader.readVarUint();
@@ -711,6 +874,8 @@ function parseV6GlyphRange(reader: V6Reader) {
 
     return values;
   });
+
+  color = tryReadTrailingRgbaColor(reader) ?? color;
 
   return {
     color,
@@ -912,86 +1077,138 @@ function buildV6TextBlock(
   } satisfies RemarkableRmTextBlock;
 }
 
+export function pointsToScreenUnits(points: number) {
+  return points * SCREEN_UNITS_PER_POINT;
+}
+
+export function screenUnitsToPoints(screenUnits: number) {
+  return screenUnits / SCREEN_UNITS_PER_POINT;
+}
+
 function getParagraphMetrics(style: number) {
   switch (style) {
     case 2:
       return {
         fontFamily: "ui-serif, Georgia, serif",
-        fontSize: 52,
-        fontWeight: 600,
+        fontSize: pointsToScreenUnits(15),
+        fontWeight: 500,
+        isListStyle: false,
+        itemSpacing: 0,
         lineHeight: 139,
         prefix: "",
         softLineHeight: 60,
-        spaceAfter: 24,
-        xOffset: 0,
-      };
+        spaceAfter: 20.85,
+        textXOffset: 0,
+        widthReduction: 0,
+      } satisfies V6ParagraphMetrics;
     case 4:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 28,
-        fontWeight: 450,
+        fontSize: pointsToScreenUnits(7.7),
+        fontWeight: 400,
+        isListStyle: true,
+        itemSpacing: 30,
         lineHeight: 34.75,
         prefix: "• ",
         softLineHeight: 40,
-        spaceAfter: 8,
-        xOffset: 34,
-      };
+        spaceAfter: 0,
+        textXOffset: pointsToScreenUnits(12),
+        widthReduction: pointsToScreenUnits(12),
+      } satisfies V6ParagraphMetrics;
     case 5:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 26,
-        fontWeight: 450,
+        fontSize: pointsToScreenUnits(7.7),
+        fontWeight: 400,
+        isListStyle: true,
+        itemSpacing: 30,
         lineHeight: 34.75,
         prefix: "– ",
         softLineHeight: 40,
-        spaceAfter: 8,
-        xOffset: 58,
-      };
+        spaceAfter: 0,
+        textXOffset: pointsToScreenUnits(24),
+        widthReduction: pointsToScreenUnits(24),
+      } satisfies V6ParagraphMetrics;
     case 6:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 28,
-        fontWeight: 450,
+        fontSize: pointsToScreenUnits(7.7),
+        fontWeight: 400,
+        isListStyle: true,
+        itemSpacing: 30,
         lineHeight: 34.75,
         prefix: "☐ ",
         softLineHeight: 40,
-        spaceAfter: 10,
-        xOffset: 40,
-      };
+        spaceAfter: 0,
+        textXOffset: pointsToScreenUnits(16),
+        widthReduction: pointsToScreenUnits(16),
+      } satisfies V6ParagraphMetrics;
     case 7:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 28,
-        fontWeight: 450,
+        fontSize: pointsToScreenUnits(7.7),
+        fontWeight: 400,
+        isListStyle: true,
+        itemSpacing: 30,
         lineHeight: 34.75,
         prefix: "☑ ",
         softLineHeight: 40,
-        spaceAfter: 10,
-        xOffset: 40,
-      };
+        spaceAfter: 0,
+        textXOffset: pointsToScreenUnits(16),
+        widthReduction: pointsToScreenUnits(16),
+      } satisfies V6ParagraphMetrics;
     case 3:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 31,
-        fontWeight: 700,
+        fontSize: pointsToScreenUnits(8.3),
+        fontWeight: 500,
+        isListStyle: false,
+        itemSpacing: 0,
         lineHeight: 69.5,
         prefix: "",
         softLineHeight: 40,
         spaceAfter: 0,
-        xOffset: 0,
-      };
+        textXOffset: 0,
+        widthReduction: 0,
+      } satisfies V6ParagraphMetrics;
     default:
       return {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 30,
-        fontWeight: 450,
+        fontSize: pointsToScreenUnits(7.7),
+        fontWeight: 400,
+        isListStyle: false,
+        itemSpacing: 0,
         lineHeight: 69.5,
         prefix: "",
         softLineHeight: 60,
         spaceAfter: 0,
-        xOffset: 0,
-      };
+        textXOffset: 0,
+        widthReduction: 0,
+      } satisfies V6ParagraphMetrics;
   }
+}
+
+function estimateCharacterAdvance(character: string, fontSize: number) {
+  if (character === " ") {
+    return fontSize * 0.34;
+  }
+
+  if (/[.,;:'"()]/.test(character)) {
+    return fontSize * 0.28;
+  }
+
+  if (/[A-Z]/.test(character)) {
+    return fontSize * 0.62;
+  }
+
+  return fontSize * 0.52;
+}
+
+function getEstimatedTextWidth(text: string, fontSize: number) {
+  return Array.from(text).reduce(
+    (total, character) => total + estimateCharacterAdvance(character, fontSize),
+    0,
+  );
 }
 
 function buildTextLayout(text: RemarkableRmTextBlock | null) {
@@ -1015,29 +1232,23 @@ function buildTextLayout(text: RemarkableRmTextBlock | null) {
   let yOffset = TEXT_TOP_Y;
   let firstAnchorY = 0;
   let lastY = 0;
-  let previousMetrics: ReturnType<typeof getParagraphMetrics> | null = null;
-
-  function estimateCharacterAdvance(character: string, fontSize: number) {
-    if (character === " ") {
-      return fontSize * 0.34;
-    }
-
-    if (/[.,;:'"()]/.test(character)) {
-      return fontSize * 0.28;
-    }
-
-    if (/[A-Z]/.test(character)) {
-      return fontSize * 0.62;
-    }
-
-    return fontSize * 0.52;
-  }
+  let previousMetrics: V6ParagraphMetrics | null = null;
 
   text.paragraphs.forEach((paragraph, paragraphIndex) => {
     const metrics = getParagraphMetrics(paragraph.style);
-    const segments = paragraph.text.split("\u2028");
+
+    if (
+      paragraphIndex > 0 &&
+      metrics.isListStyle &&
+      previousMetrics &&
+      !previousMetrics.isListStyle
+    ) {
+      yOffset += BULLET_SECTION_GAP;
+    }
+
     const anchorY = text.posY + yOffset + metrics.lineHeight;
-    const anchorX = text.posX + metrics.xOffset;
+    const textX = text.posX + metrics.textXOffset;
+    const anchorX = text.posX;
 
     if (paragraphIndex === 0) {
       firstAnchorY = anchorY;
@@ -1051,30 +1262,45 @@ function buildTextLayout(text: RemarkableRmTextBlock | null) {
     anchorSoftOffsets.set(crdtIdKey(paragraph.startId), 0);
 
     if (paragraphIndex > 0 && previousMetrics) {
+      let newlineOffset =
+        metrics.lineHeight +
+        previousMetrics.spaceAfter +
+        previousMetrics.itemSpacing;
+      if (metrics.isListStyle && !previousMetrics.isListStyle) {
+        newlineOffset += BULLET_SECTION_GAP;
+      }
       newlineOffsets.set(
         crdtIdKey(paragraph.startId),
-        metrics.lineHeight + previousMetrics.spaceAfter,
+        newlineOffset,
       );
     }
 
-    segments.forEach((segment, segmentIndex) => {
-      const y = anchorY + segmentIndex * metrics.softLineHeight;
-      lines.push({
-        fontFamily: metrics.fontFamily,
-        fontSize: metrics.fontSize,
-        fontWeight: metrics.fontWeight,
-        startId: paragraph.startId,
-        text: `${segmentIndex === 0 ? metrics.prefix : ""}${segment}`,
-        x: anchorX,
-        y,
-      });
-      lastY = y;
-    });
-
-    let currentX = anchorX;
-    let currentY = anchorY;
+    const availableWidth = Math.max(
+      text.width - TEXT_WRAP_MARGIN - metrics.widthReduction,
+      metrics.fontSize * 4,
+    );
+    const visualLines: string[] = [];
+    let currentLineText = "";
+    let currentX = text.posX;
     let currentSoftOffset = 0;
+    let currentWordStartOffset = 0;
+    let pendingWord: Array<{ character: string; id: CrdtId; width: number }> = [];
     const characters = Array.from(paragraph.text);
+
+    function flushPendingWord() {
+      if (pendingWord.length === 0) {
+        return;
+      }
+
+      currentLineText += pendingWord.map((item) => item.character).join("");
+      pendingWord = [];
+    }
+
+    function pushCurrentLine() {
+      visualLines.push(currentLineText.replace(/\s+$/u, ""));
+      currentLineText = "";
+      lastY = anchorY + currentSoftOffset;
+    }
 
     characters.forEach((character, characterIndex) => {
       const id = {
@@ -1083,24 +1309,96 @@ function buildTextLayout(text: RemarkableRmTextBlock | null) {
       } satisfies CrdtId;
       const key = crdtIdKey(id);
 
-      anchors.set(key, { x: currentX, y: currentY });
-      anchorXPositions.set(key, currentX);
-      anchorSoftOffsets.set(key, currentSoftOffset);
-
-      if (character === "\u2028") {
+      if (character === LINE_SEPARATOR) {
+        flushPendingWord();
+        anchors.set(key, { x: currentX, y: anchorY + currentSoftOffset });
+        anchorXPositions.set(key, currentX);
+        anchorSoftOffsets.set(key, currentSoftOffset);
+        pushCurrentLine();
         currentSoftOffset += metrics.softLineHeight;
-        currentY = anchorY + currentSoftOffset;
-        currentX = anchorX;
+        currentX = text.posX;
+        currentWordStartOffset = 0;
         return;
       }
 
-      currentX += estimateCharacterAdvance(character, metrics.fontSize);
+      const width = estimateCharacterAdvance(character, metrics.fontSize);
+
+      if (character === " ") {
+        flushPendingWord();
+        anchors.set(key, { x: currentX, y: anchorY + currentSoftOffset });
+        anchorXPositions.set(key, currentX);
+        anchorSoftOffsets.set(key, currentSoftOffset);
+        currentLineText += character;
+        currentX += width;
+        currentWordStartOffset = currentX - text.posX;
+        return;
+      }
+
+      if (
+        currentX - text.posX + width > availableWidth &&
+        currentWordStartOffset > 0 &&
+        pendingWord.length > 0
+      ) {
+        pushCurrentLine();
+        currentSoftOffset += metrics.softLineHeight;
+        currentX = text.posX;
+
+        let movedWordText = "";
+        for (const pendingCharacter of pendingWord) {
+          const pendingKey = crdtIdKey(pendingCharacter.id);
+          anchors.set(pendingKey, {
+            x: currentX,
+            y: anchorY + currentSoftOffset,
+          });
+          anchorXPositions.set(pendingKey, currentX);
+          anchorSoftOffsets.set(pendingKey, currentSoftOffset);
+          movedWordText += pendingCharacter.character;
+          currentX += pendingCharacter.width;
+        }
+
+        currentLineText = movedWordText;
+        currentWordStartOffset = 0;
+      }
+
+      anchors.set(key, { x: currentX, y: anchorY + currentSoftOffset });
+      anchorXPositions.set(key, currentX);
+      anchorSoftOffsets.set(key, currentSoftOffset);
+      pendingWord.push({
+        character,
+        id,
+        width,
+      });
+      currentX += width;
+    });
+
+    flushPendingWord();
+    if (
+      visualLines.length === 0 ||
+      currentLineText.length > 0 ||
+      paragraph.text.endsWith(LINE_SEPARATOR)
+    ) {
+      pushCurrentLine();
+    }
+
+    visualLines.forEach((lineText, lineIndex) => {
+      const y = anchorY + lineIndex * metrics.softLineHeight;
+      lines.push({
+        fontFamily: metrics.fontFamily,
+        fontSize: metrics.fontSize,
+        fontWeight: metrics.fontWeight,
+        startId: paragraph.startId,
+        text: `${lineIndex === 0 ? metrics.prefix : ""}${lineText}`,
+        x: textX,
+        y,
+      });
+      lastY = y;
     });
 
     yOffset +=
       metrics.lineHeight +
-      Math.max(0, segments.length - 1) * metrics.softLineHeight +
-      metrics.spaceAfter;
+      Math.max(0, visualLines.length - 1) * metrics.softLineHeight +
+      metrics.spaceAfter +
+      metrics.itemSpacing;
     previousMetrics = metrics;
   });
 
@@ -1508,7 +1806,7 @@ function renderTextBlock(text: RemarkableRmTextBlock | null) {
       (line) =>
         `<text x="${line.x.toFixed(2)}" y="${line.y.toFixed(2)}" font-family="${escapeXml(
           line.fontFamily,
-        )}" font-size="${line.fontSize}" font-weight="${line.fontWeight}" fill="#171717">${escapeXml(
+        )}" font-size="${line.fontSize}" font-weight="${line.fontWeight}" fill="#171717" xml:space="preserve">${escapeXml(
           line.text,
         )}</text>`,
     )
@@ -1516,7 +1814,10 @@ function renderTextBlock(text: RemarkableRmTextBlock | null) {
 }
 
 function getTextLineWidth(line: V6TextLayoutLine) {
-  return Math.max(line.fontSize * 0.55 * Array.from(line.text).length, line.fontSize * 0.6);
+  return Math.max(
+    getEstimatedTextWidth(line.text, line.fontSize),
+    line.fontSize * 0.6,
+  );
 }
 
 function getTextBounds(textLayout: V6TextLayoutData) {
@@ -1691,13 +1992,17 @@ export function parseRemarkableRmPage(input: Buffer | ArrayBuffer) {
   return parseLegacyRemarkableRmPage(buffer, version);
 }
 
-export function renderRemarkableRmPageToSvg(
+export function getRemarkableRmSvgGeometry(
   page: RemarkableRmPage,
   options: RenderRemarkableRmSvgOptions = {},
 ) {
   const textLayout = buildTextLayout(page.text);
   const viewport = options.viewport ?? "content";
   const contentBounds = createEmptyBounds();
+  const pageWidth =
+    options.pageSize?.width ?? page.paperSize?.width ?? DEFAULT_PAGE_WIDTH;
+  const pageHeight =
+    options.pageSize?.height ?? page.paperSize?.height ?? DEFAULT_PAGE_HEIGHT;
 
   if (page.groups) {
     for (const group of page.groups) {
@@ -1712,30 +2017,116 @@ export function renderRemarkableRmPageToSvg(
   }
 
   mergeBounds(contentBounds, getTextBounds(textLayout));
+  const sceneMinX = hasBounds(contentBounds) ? contentBounds.minX : page.minX;
+  const sceneMinY = hasBounds(contentBounds) ? contentBounds.minY : page.minY;
+  const sceneMaxX = hasBounds(contentBounds) ? contentBounds.maxX : page.maxX;
+  const sceneMaxY = hasBounds(contentBounds) ? contentBounds.maxY : page.maxY;
 
   const contentPadding = 28;
+  const defaultPageMinX = -pageWidth / 2;
+  const defaultPageMaxX = pageWidth / 2;
+  if (viewport === "frame") {
+    return {
+      minX: defaultPageMinX,
+      minY: 0,
+      width: pageWidth,
+      height: pageHeight,
+      pageMinX: defaultPageMinX,
+      pageMinY: 0,
+      pageWidth,
+      pageHeight,
+    } satisfies RemarkableRmSvgGeometry;
+  }
   const minX = viewport === "page"
-    ? 0
+    ? Math.floor(Math.min(defaultPageMinX, sceneMinX, page.minX))
     : hasBounds(contentBounds)
       ? Math.floor(contentBounds.minX - contentPadding)
       : Math.floor(page.minX - contentPadding);
   const minY = viewport === "page"
-    ? 0
+    ? Math.floor(Math.min(0, sceneMinY, page.minY))
     : hasBounds(contentBounds)
       ? Math.floor(contentBounds.minY - contentPadding)
       : Math.floor(page.minY - contentPadding);
   const maxX = viewport === "page"
-    ? Math.max(page.paperSize?.width ?? DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_WIDTH)
+    ? Math.ceil(Math.max(defaultPageMaxX, sceneMaxX, page.maxX))
     : hasBounds(contentBounds)
       ? Math.ceil(contentBounds.maxX + contentPadding)
       : Math.ceil(page.maxX + contentPadding);
   const maxY = viewport === "page"
-    ? Math.max(page.paperSize?.height ?? DEFAULT_PAGE_HEIGHT, DEFAULT_PAGE_HEIGHT)
+    ? Math.ceil(Math.max(pageHeight, sceneMaxY, page.maxY))
     : hasBounds(contentBounds)
       ? Math.ceil(contentBounds.maxY + contentPadding)
       : Math.ceil(page.maxY + contentPadding);
-  const width = maxX - minX;
-  const height = maxY - minY;
+  return {
+    minX,
+    minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    pageMinX: defaultPageMinX,
+    pageMinY: 0,
+    pageWidth,
+    pageHeight,
+  } satisfies RemarkableRmSvgGeometry;
+}
+
+export function getRemarkableRmOverlayPlacement(
+  geometry: RemarkableRmSvgGeometry,
+): RemarkableRmOverlayPlacement {
+  const compositionWidth = Math.max(geometry.width, geometry.pageWidth);
+  const compositionHeight = Math.max(geometry.height, geometry.pageHeight);
+
+  let overlayX = 0;
+  let overlayY = 0;
+  let pageX = 0;
+  let pageY = 0;
+
+  if (geometry.width > geometry.pageWidth) {
+    pageX =
+      compositionWidth / 2 -
+      geometry.pageWidth / 2 -
+      (geometry.width / 2 + geometry.minX);
+  } else if (geometry.width < geometry.pageWidth) {
+    overlayX = compositionWidth / 2 - geometry.width / 2 + (geometry.width / 2 + geometry.minX);
+  }
+
+  if (geometry.height > geometry.pageHeight) {
+    pageY = -geometry.minY;
+  } else if (geometry.height < geometry.pageHeight) {
+    overlayY = geometry.minY;
+  }
+
+  return {
+    compositionWidth,
+    compositionHeight,
+    overlayX,
+    overlayY,
+    overlayWidth: geometry.width,
+    overlayHeight: geometry.height,
+    pageX,
+    pageY,
+    pageWidth: geometry.pageWidth,
+    pageHeight: geometry.pageHeight,
+  };
+}
+
+export function renderRemarkableRmPageToSvg(
+  page: RemarkableRmPage,
+  options: RenderRemarkableRmSvgOptions = {},
+) {
+  const textLayout = buildTextLayout(page.text);
+  const viewport = options.viewport ?? "content";
+  const transparentBackground = options.transparentBackground === true;
+  const preserveAspectRatio =
+    transparentBackground && viewport === "page" ? "none" : "xMidYMid meet";
+  const geometry = getRemarkableRmSvgGeometry(page, options);
+  const { minX, minY, width, height } = geometry;
+  const unitScale = options.unitScale ?? 1;
+  const scaledMinX = minX * unitScale;
+  const scaledMinY = minY * unitScale;
+  const scaledWidth = width * unitScale;
+  const scaledHeight = height * unitScale;
+  const contentTransform =
+    unitScale === 1 ? "" : ` transform="scale(${unitScale.toFixed(8)})"`;
 
   const body = page.groups
     ? page.groups
@@ -1749,9 +2140,11 @@ export function renderRemarkableRmPageToSvg(
         .join("");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}">
-  <rect x="${minX}" y="${minY}" width="${width}" height="${height}" fill="${PAPER_BACKGROUND}" />
-  <g data-root-text="1">${renderTextBlock(page.text)}</g>
-  ${body}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${scaledMinX} ${scaledMinY} ${scaledWidth} ${scaledHeight}" width="${scaledWidth}" height="${scaledHeight}" preserveAspectRatio="${preserveAspectRatio}">
+  ${transparentBackground ? "" : `<rect x="${scaledMinX}" y="${scaledMinY}" width="${scaledWidth}" height="${scaledHeight}" fill="${PAPER_BACKGROUND}" />`}
+  <g${contentTransform}>
+    <g data-root-text="1">${renderTextBlock(page.text)}</g>
+    ${body}
+  </g>
 </svg>`;
 }

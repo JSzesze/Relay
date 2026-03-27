@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   useEffect,
   useMemo,
@@ -14,6 +15,8 @@ import {
 import { useTree } from "@headless-tree/react";
 import {
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   Download,
   FolderClosed,
   FolderOpen,
@@ -21,6 +24,7 @@ import {
   RefreshCw,
   Tag,
 } from "lucide-react";
+import { PdfScenePreview } from "@/components/pdf-scene-preview";
 import { Tree, TreeItem, TreeItemLabel } from "@/components/reui/tree";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,6 +69,7 @@ export function RemarkableLibrary({
   const [isSyncPending, startSyncTransition] = useTransition();
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [showDebugPayload, setShowDebugPayload] = useState(false);
+  const [activePageIndex, setActivePageIndex] = useState(0);
 
   const rootNode = useMemo<TreeNode>(
     () => ({
@@ -151,6 +156,7 @@ export function RemarkableLibrary({
       setIsDetailLoading(false);
       setDetail(null);
       setDetailError(null);
+      setActivePageIndex(0);
       return;
     }
 
@@ -175,6 +181,7 @@ export function RemarkableLibrary({
 
         if (!cancelled) {
           setDetail(data.detail);
+          setActivePageIndex(0);
         }
       } catch (error) {
         if (!cancelled) {
@@ -196,7 +203,35 @@ export function RemarkableLibrary({
   }, [selectedId, selectedKind]);
 
   const selectedNode = selectedId ? nodeMap.get(selectedId) ?? null : null;
-  const activeNotebookPage = detail?.notebookPages[0] ?? null;
+  const isPdfDocument = detail?.downloadAsset?.contentType === "application/pdf";
+  const renderableNotebookPages = detail?.notebookPages ?? [];
+  const previewPageCount = detail
+    ? isPdfDocument
+      ? typeof detail.pageCount === "number" && detail.pageCount > 0
+        ? detail.pageCount
+        : renderableNotebookPages.length > 0
+          ? renderableNotebookPages.length
+          : Math.max(detail.originalPageCount ?? 0, 1)
+      : renderableNotebookPages.length
+    : 0;
+  const clampedPageIndex =
+    previewPageCount > 0
+      ? Math.min(activePageIndex, previewPageCount - 1)
+      : 0;
+  const activeNotebookPage = isPdfDocument
+    ? renderableNotebookPages.find((page) => page.pageIndex === clampedPageIndex) ?? null
+    : renderableNotebookPages[clampedPageIndex] ?? null;
+  const activePageNumber = clampedPageIndex + 1;
+
+  useEffect(() => {
+    if (previewPageCount === 0) {
+      return;
+    }
+
+    if (activePageIndex > previewPageCount - 1) {
+      setActivePageIndex(previewPageCount - 1);
+    }
+  }, [activePageIndex, previewPageCount]);
 
   function handleSync() {
     startSyncTransition(async () => {
@@ -353,7 +388,114 @@ export function RemarkableLibrary({
                 </p>
               ) : detail ? (
                 <>
-                  {activeNotebookPage ? (
+                  {previewPageCount > 1 ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-black/10 bg-[var(--panel)] p-3">
+                      <div>
+                        <h4 className="font-medium text-neutral-950">Page</h4>
+                        <p className="mt-1 text-sm text-neutral-600">
+                          Page {activePageNumber} of {previewPageCount}
+                        </p>
+                        {isPdfDocument &&
+                        renderableNotebookPages.length > 0 &&
+                        renderableNotebookPages.length < previewPageCount ? (
+                          <p className="mt-1 text-xs text-neutral-500">
+                            Annotation scenes are available on{" "}
+                            {renderableNotebookPages.length} of{" "}
+                            {previewPageCount} pages.
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setActivePageIndex((current) =>
+                              Math.max(current - 1, 0),
+                            )
+                          }
+                          disabled={clampedPageIndex === 0}
+                        >
+                          <ChevronLeft className="size-4" />
+                          Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setActivePageIndex((current) =>
+                              Math.min(current + 1, previewPageCount - 1),
+                            )
+                          }
+                          disabled={clampedPageIndex >= previewPageCount - 1}
+                        >
+                          Next
+                          <ChevronRight className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isPdfDocument ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-medium text-neutral-950">
+                          PDF Scene Preview
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          {renderableNotebookPages.length > 0 ? (
+                            <Button asChild size="sm" variant="outline">
+                              <a
+                                href={`/api/remarkable/items/${detail.id}/annotated.pdf`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Merged PDF
+                              </a>
+                            </Button>
+                          ) : null}
+                          <Button asChild size="sm" variant="outline">
+                            <a
+                              href={`/api/remarkable/items/${detail.id}/download?inline=1`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Full Size
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                      <PdfScenePreview
+                        pdfUrl={`/api/remarkable/items/${detail.id}/download?inline=1`}
+                        overlayGeometryUrl={
+                          activeNotebookPage
+                            ? `/api/remarkable/items/${detail.id}/pages/${activeNotebookPage.id}/overlay?viewport=frame&transparent=1`
+                            : null
+                        }
+                        overlaySvgUrl={
+                          activeNotebookPage
+                            ? `/api/remarkable/items/${detail.id}/pages/${activeNotebookPage.id}/svg?viewport=frame&transparent=1`
+                            : null
+                        }
+                        sourcePageNumber={
+                          activeNotebookPage?.sourcePageIndex != null
+                            ? activeNotebookPage.sourcePageIndex + 1
+                            : null
+                        }
+                        title={detail.name}
+                      />
+                      {!activeNotebookPage &&
+                      renderableNotebookPages.length < previewPageCount ? (
+                        <p className="text-sm text-neutral-600">
+                          No `.rm` annotation scene was found for this PDF page.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {!isPdfDocument && activeNotebookPage ? (
                     <div className="space-y-3">
                       <div className="flex items-center justify-between gap-3">
                         <h4 className="font-medium text-neutral-950">Notebook Preview</h4>
@@ -367,42 +509,19 @@ export function RemarkableLibrary({
                           </a>
                         </Button>
                       </div>
-                      <div className="overflow-hidden rounded-[1rem] border border-black/10 bg-white">
-                        <img
+                      <div className="relative min-h-[24rem] overflow-hidden rounded-[1rem] border border-black/10 bg-white">
+                        <Image
                           src={`/api/remarkable/items/${detail.id}/pages/${activeNotebookPage.id}/svg`}
                           alt={`${detail.name} notebook preview`}
-                          decoding="async"
-                          className="h-auto w-full"
+                          fill
+                          unoptimized
+                          sizes="(min-width: 1280px) 60vw, 100vw"
+                          className="object-contain"
                         />
                       </div>
                       <p className="text-sm text-neutral-600">
-                        First-party `.rm` rendering is parser-owned again. For PDF-backed annotation pages, the v6 scene gives us highlights, anchors, and ink, but not the full source page body text, so the preview no longer tries to fake that text back into the canvas.
+                        Pure notebooks still render directly from the first-party `.rm` parser, using the selected page from the scene bundle rather than a separate source document.
                       </p>
-                    </div>
-                  ) : null}
-
-                  {detail.downloadAsset?.contentType === "application/pdf" ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="font-medium text-neutral-950">Preview</h4>
-                        <Button asChild size="sm" variant="outline">
-                          <a
-                            href={`/api/remarkable/items/${detail.id}/download?inline=1`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open Full Size
-                          </a>
-                        </Button>
-                      </div>
-                      <div className="overflow-hidden rounded-[1rem] border border-black/10 bg-white">
-                        <iframe
-                          key={detail.id}
-                          src={`/api/remarkable/items/${detail.id}/download?inline=1#toolbar=0`}
-                          title={`${detail.name} preview`}
-                          className="h-[32rem] w-full"
-                        />
-                      </div>
                     </div>
                   ) : null}
 

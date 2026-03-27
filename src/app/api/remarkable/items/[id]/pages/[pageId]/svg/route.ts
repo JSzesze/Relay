@@ -25,16 +25,21 @@ export async function GET(
   try {
     const { id, pageId } = await context.params;
     const searchParams = new URL(request.url).searchParams;
+    const viewportParam = searchParams.get("viewport");
     const viewport =
-      searchParams.get("viewport") === "page" ? "page" : "content";
+      viewportParam === "page" || viewportParam === "frame"
+        ? viewportParam
+        : "content";
+    const transparentBackground = searchParams.get("transparent") === "1";
     const { svg } = await renderRemarkableNotebookPageSvg(id, pageId, {
       viewport,
+      transparentBackground,
     });
 
     return new Response(svg, {
       headers: {
         "content-type": "image/svg+xml; charset=utf-8",
-        "cache-control": "no-store",
+        "cache-control": "private, max-age=300, stale-while-revalidate=300",
       },
     });
   } catch (error) {
@@ -48,7 +53,7 @@ export async function GET(
         status: 200,
         headers: {
           "content-type": "image/svg+xml; charset=utf-8",
-          "cache-control": "no-store",
+          "cache-control": "private, max-age=60, stale-while-revalidate=60",
         },
       },
     );

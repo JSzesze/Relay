@@ -24,7 +24,7 @@ export async function GET(
         "content-type": file.contentType,
         "content-disposition": buildContentDisposition(file.fileName, disposition),
         "content-length": String(file.bytes.length),
-        "cache-control": "no-store",
+        "cache-control": "private, max-age=300, stale-while-revalidate=300",
       },
     });
   } catch (error) {
