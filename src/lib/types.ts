@@ -23,6 +23,12 @@ export interface RemarkablePageTag extends RemarkableTag {
   pageId: string;
 }
 
+export interface RemarkableNotebookPage {
+  id: string;
+  lastModified?: string;
+  verticalScroll?: number;
+}
+
 export interface RemarkableFolderSkeleton {
   id: string;
   kind: "folder";
@@ -39,13 +45,6 @@ export interface RemarkableDocumentSkeleton {
   name: string;
   parentId: string | null;
   pinned: boolean;
-  fileType?: string;
-  title?: string;
-  authors?: string[];
-  pageCount?: number;
-  originalPageCount?: number;
-  tags: RemarkableTag[];
-  pageTags: RemarkablePageTag[];
   lastModified?: string;
   lastOpened?: string;
 }
@@ -56,6 +55,33 @@ export interface RemarkableSkeletonStore {
   generation: number;
   folders: RemarkableFolderSkeleton[];
   documents: RemarkableDocumentSkeleton[];
+}
+
+export interface RemarkableDocumentDetail {
+  id: string;
+  name: string;
+  parentId: string | null;
+  pinned: boolean;
+  lastModified?: string;
+  lastOpened?: string;
+  fileType?: string;
+  title?: string;
+  authors?: string[];
+  pageCount?: number;
+  originalPageCount?: number;
+  tags: RemarkableTag[];
+  pageTags: RemarkablePageTag[];
+  notebookPages: RemarkableNotebookPage[];
+  downloadAsset: RemarkableDownloadAsset | null;
+  rawMetadata: Record<string, unknown>;
+  rawContent: Record<string, unknown> | null;
+}
+
+export interface RemarkableDownloadAsset {
+  documentId: string;
+  fileName: string;
+  contentType: string;
+  extension: string;
 }
 
 export interface SendDocument {

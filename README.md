@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Relay
 
-## Getting Started
+Relay is a Next.js app for sending content to reMarkable and exploring pulled reMarkable documents locally.
 
-First, run the development server:
+Current capabilities:
+- connect a reMarkable account with the browser pairing code flow
+- send Markdown, HTML, text, URLs, and PDFs to reMarkable
+- sync a local skeleton of folders and documents from reMarkable cloud
+- inspect document metadata, tags, and page-level details
+- preview pulled `.rm` notebook pages with a first-party v6 parser
+- download original PDF and EPUB assets when available
+
+## Development
+
+Install dependencies and start the app:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The dev server runs on [http://127.0.0.1:3001](http://127.0.0.1:3001).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Useful commands:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm lint
+pnpm build
+```
 
-## Learn More
+## Acknowledgements
 
-To learn more about Next.js, take a look at the following resources:
+This project was informed by community reverse-engineering and tooling around reMarkable formats and sync behavior, especially:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- [splitbrain/ReMarkableAPI](https://github.com/splitbrain/ReMarkableAPI)
+- [ddvk/rmapi](https://github.com/ddvk/rmapi)
+- [hafaio/repub](https://github.com/hafaio/repub)
+- [Scrybbling-together/rmscene](https://github.com/Scrybbling-together/rmscene)
+- [Scrybbling-together/rmc](https://github.com/Scrybbling-together/rmc)
+- [Scrybbling-together/remarks](https://github.com/Scrybbling-together/remarks)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The current `.rm` parser and renderer in this repo are first-party code, but these projects were useful references for understanding the format boundaries and validating behavior.

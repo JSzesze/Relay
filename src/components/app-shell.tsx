@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { Inbox, Link2, Send, Settings2 } from "lucide-react";
+import { FolderTree, Inbox, Link2, Send, Settings2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 
 const navigation = [
   { href: "/dashboard", label: "Overview", icon: Inbox },
+  { href: "/dashboard/library", label: "Library", icon: FolderTree },
   { href: "/dashboard/new", label: "New Send", icon: Send },
   { href: "/dashboard/jobs", label: "Jobs", icon: Link2 },
   { href: "/dashboard/settings", label: "Settings", icon: Settings2 },
