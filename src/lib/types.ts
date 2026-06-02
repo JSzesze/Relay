@@ -25,7 +25,9 @@ export interface RemarkablePageTag extends RemarkableTag {
 
 export interface RemarkableNotebookPage {
   id: string;
+  pageIndex: number;
   lastModified?: string;
+  sourcePageIndex?: number | null;
   verticalScroll?: number;
 }
 
