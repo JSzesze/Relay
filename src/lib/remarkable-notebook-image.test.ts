@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { inflateSync } from "node:zlib";
 
 import { crc32c } from "./crc32c";
 import {
@@ -7,7 +8,11 @@ import {
   buildNotebookBundle,
   summarizeBundleFiles,
 } from "./remarkable-notebook-bundle";
-import { createMarkerPng, isPngBuffer } from "./remarkable-page-png";
+import {
+  createMarkerPng,
+  isPngBuffer,
+  renderHtmlPagesToPng,
+} from "./remarkable-page-png";
 import { parseRemarkableRmPage } from "./remarkable-rm";
 import { writeImageRmPage } from "./remarkable-rm-write";
 import {
@@ -17,10 +22,77 @@ import {
 
 const IMAGE_UUID = "11111111-2222-3333-4444-555555555555";
 const IMAGE_FILE = `${IMAGE_UUID}.png`;
+const PAPER_PIXEL = Buffer.from([252, 251, 247]);
+
+function decodeRgbPng(png: Buffer) {
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  const idat: Buffer[] = [];
+
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    offset += 12 + length;
+  }
+
+  const raw = inflateSync(Buffer.concat(idat));
+  return { height, raw, width };
+}
+
+function countInkPixels(png: Buffer) {
+  const { height, raw, width } = decodeRgbPng(png);
+  const stride = width * 3 + 1;
+  let ink = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const row = raw.subarray(y * stride + 1, y * stride + 1 + width * 3);
+    for (let x = 0; x < width; x += 1) {
+      const pixel = row.subarray(x * 3, x * 3 + 3);
+      if (!pixel.equals(PAPER_PIXEL)) {
+        ink += 1;
+      }
+    }
+  }
+
+  return { height, ink, width };
+}
 
 describe("crc32c", () => {
   it("matches the Castagnoli check value for 123456789", () => {
     assert.equal(crc32c(Buffer.from("123456789")), 0xe3069283);
+  });
+});
+
+describe("page PNG renderer", () => {
+  it("paints readable ASCII ink on a Paper Pro-sized page", () => {
+    const [page] = renderHtmlPagesToPng({
+      normalizedHtml:
+        "<article><h1>Inbox</h1><p>Follow up with Maya on the Connect append path.</p></article>",
+      title: "Agent notes",
+    });
+
+    assert.ok(page);
+    assert.equal(isPngBuffer(page.pngBytes), true);
+    assert.equal(page.width, 1620);
+    assert.equal(page.height, 2160);
+
+    const painted = countInkPixels(page.pngBytes);
+    assert.equal(painted.width, 1620);
+    assert.equal(painted.height, 2160);
+    assert.ok(
+      painted.ink > 8_000,
+      `expected substantial ink coverage, got ${painted.ink} non-paper pixels`,
+    );
   });
 });
 

@@ -80,6 +80,7 @@ Append looks up notebooks from the local library skeleton (`pnpm` app library sy
 ### Current limits
 
 - Appends **image pages**, not typed text or ink. Existing strokes are left untouched.
+- Text is rasterized with a public-domain 8×8 bitmap face (scaled up on Paper Pro). That is readable for notes, not a typeset PDF.
 - Target device page size defaults to **reMarkable Paper Pro** (`1620×2160`). Override with `pageSize`.
 - Only notebooks can be appended. PDF/EPUB documents still use the existing `/api/send` PDF upload.
 - Live Connect upload needs a paired account. If sync v3 PUT/root update is rejected, the generator still produces valid `.rm` + PNG files and returns `uploadGap` with the API error.
