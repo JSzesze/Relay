@@ -51,32 +51,28 @@ export async function ensureFreshConnection() {
 export async function fetchSyncText(
   connection: RemarkableConnection,
   path: string,
+  fileName?: string,
 ) {
-  const host = connection.tectonicHost ?? getUploadHost(connection.userToken);
-  const response = await fetch(`${host}${path}`, {
-    headers: {
-      Authorization: `Bearer ${connection.userToken}`,
-    },
-    cache: "no-store",
-  });
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(text || response.statusText || `HTTP ${response.status}`);
-  }
-
-  return text;
+  const response = await fetchSyncResponse(connection, path, fileName);
+  return response.text();
 }
 
 export async function fetchSyncResponse(
   connection: RemarkableConnection,
   path: string,
+  fileName?: string,
 ) {
   const host = connection.tectonicHost ?? getUploadHost(connection.userToken);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${connection.userToken}`,
+  };
+
+  if (fileName) {
+    headers["rm-filename"] = fileName;
+  }
+
   const response = await fetch(`${host}${path}`, {
-    headers: {
-      Authorization: `Bearer ${connection.userToken}`,
-    },
+    headers,
     cache: "no-store",
   });
 

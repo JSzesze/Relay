@@ -6,7 +6,9 @@
     "dev": "next dev --hostname 127.0.0.1 --port 3001",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "tsx --test src/lib/remarkable-notebook-image.test.ts",
+    "notebook": "tsx scripts/notebook-pages.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -38,6 +40,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { crc32cBase64 } from "@/lib/crc32c";
+
 const AUTH_HOST = "https://webapp.cloud.remarkable.com";
 const SOURCE_HEADER = "rM-Source";
 const META_HEADER = "rM-Meta";
@@ -129,4 +131,65 @@ export async function uploadPdf(params: {
     host,
     data,
   };
+}
+
+export async function putCloudFile(params: {
+  bytes: Uint8Array;
+  fileName: string;
+  hash: string;
+  host?: string;
+  userToken: string;
+}) {
+  const host = params.host ?? getUploadHost(params.userToken);
+  const response = await fetch(`${host}/sync/v3/files/${params.hash}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.userToken}`,
+      "rm-filename": params.fileName,
+      "x-goog-hash": `crc32c=${crc32cBase64(params.bytes)}`,
+    },
+    body: Buffer.from(params.bytes),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      text || response.statusText || `Failed to upload ${params.fileName}`,
+    );
+  }
+
+  return {
+    fileName: params.fileName,
+    hash: params.hash,
+    host,
+  };
+}
+
+export async function putCloudRoot(params: {
+  broadcast?: boolean;
+  generation: number;
+  hash: string;
+  host?: string;
+  userToken: string;
+}) {
+  const host = params.host ?? getUploadHost(params.userToken);
+  const response = await fetch(`${host}/sync/v3/root`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.userToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      broadcast: params.broadcast ?? true,
+      generation: params.generation,
+      hash: params.hash,
+    }),
+  });
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(text || response.statusText || "Failed to update sync root.");
+  }
+
+  return JSON.parse(text) as { generation: number; hash: string };
 }
