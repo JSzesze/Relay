@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  DEFAULT_WATCH_INTERVAL_MS,
+  DEFAULT_WATCH_FAST_WINDOW_MS,
+  DEFAULT_WATCH_MAX_INTERVAL_MS,
+  DEFAULT_WATCH_MIN_INTERVAL_MS,
   EMPTY_WATCH_STATE,
+  advanceWatchSchedule,
   diffSkeletonDocuments,
+  enterFastWindow,
   filterEventsSince,
-  getWatchIntervalMs,
+  getWatchScheduleConfig,
   isWatchEnabled,
   pollLibraryFingerprint,
+  resolveWatchSchedule,
   type LibraryWatchPollDeps,
+  type WatchScheduleConfig,
 } from "./remarkable-watch";
 import { parseRemarkableRootFingerprint } from "./remarkable-sync/types";
 import type {
@@ -113,23 +119,108 @@ function createPollDeps(
   };
 }
 
+const TEST_SCHEDULE: WatchScheduleConfig = {
+  fastWindowMs: 120_000,
+  maxIntervalMs: 180_000,
+  minIntervalMs: 20_000,
+};
+
 describe("watch config", () => {
-  it("defaults to enabled with a 45s interval", () => {
+  it("defaults to enabled with quiet/fast adaptive intervals", () => {
     assert.equal(isWatchEnabled({}), true);
-    assert.equal(getWatchIntervalMs({}), DEFAULT_WATCH_INTERVAL_MS);
+    assert.deepEqual(getWatchScheduleConfig({}), {
+      fastWindowMs: DEFAULT_WATCH_FAST_WINDOW_MS,
+      maxIntervalMs: DEFAULT_WATCH_MAX_INTERVAL_MS,
+      minIntervalMs: DEFAULT_WATCH_MIN_INTERVAL_MS,
+    });
   });
 
   it("accepts env overrides and rejects tiny intervals", () => {
     assert.equal(isWatchEnabled({ REMARKABLE_WATCH_ENABLED: "0" }), false);
     assert.equal(isWatchEnabled({ RELAY_WATCH_ENABLED: "false" }), false);
+    assert.deepEqual(
+      getWatchScheduleConfig({
+        REMARKABLE_WATCH_MIN_INTERVAL_MS: "15000",
+        REMARKABLE_WATCH_MAX_INTERVAL_MS: "240000",
+        REMARKABLE_WATCH_FAST_WINDOW_MS: "90000",
+      }),
+      {
+        fastWindowMs: 90_000,
+        maxIntervalMs: 240_000,
+        minIntervalMs: 15_000,
+      },
+    );
     assert.equal(
-      getWatchIntervalMs({ REMARKABLE_WATCH_INTERVAL_MS: "60000" }),
+      getWatchScheduleConfig({ REMARKABLE_WATCH_INTERVAL_MS: "60000" })
+        .maxIntervalMs,
       60_000,
     );
     assert.equal(
-      getWatchIntervalMs({ REMARKABLE_WATCH_INTERVAL_MS: "250" }),
-      DEFAULT_WATCH_INTERVAL_MS,
+      getWatchScheduleConfig({ REMARKABLE_WATCH_MIN_INTERVAL_MS: "250" })
+        .minIntervalMs,
+      DEFAULT_WATCH_MIN_INTERVAL_MS,
     );
+  });
+});
+
+describe("watch schedule", () => {
+  it("stays quiet until a change or local write opens the fast window", () => {
+    const quiet = resolveWatchSchedule({
+      config: TEST_SCHEDULE,
+      fastUntil: null,
+      nowMs: 1_000,
+    });
+    assert.equal(quiet.mode, "quiet");
+    assert.equal(quiet.intervalMs, 180_000);
+
+    const afterChange = advanceWatchSchedule({
+      config: TEST_SCHEDULE,
+      fastUntil: null,
+      nowMs: 1_000,
+      observedChange: true,
+    });
+    assert.equal(afterChange.mode, "fast");
+    assert.equal(afterChange.intervalMs, 20_000);
+    assert.equal(afterChange.fastUntil, 121_000);
+
+    const stillFast = advanceWatchSchedule({
+      config: TEST_SCHEDULE,
+      fastUntil: afterChange.fastUntil,
+      nowMs: 60_000,
+      observedChange: false,
+    });
+    assert.equal(stillFast.mode, "fast");
+    assert.equal(stillFast.fastUntil, 121_000);
+
+    const extended = advanceWatchSchedule({
+      config: TEST_SCHEDULE,
+      fastUntil: afterChange.fastUntil,
+      nowMs: 80_000,
+      observedChange: true,
+    });
+    assert.equal(extended.fastUntil, 200_000);
+
+    const quietAgain = advanceWatchSchedule({
+      config: TEST_SCHEDULE,
+      fastUntil: afterChange.fastUntil,
+      nowMs: 121_000,
+      observedChange: false,
+    });
+    assert.equal(quietAgain.mode, "quiet");
+    assert.equal(quietAgain.intervalMs, 180_000);
+    assert.equal(quietAgain.fastUntil, null);
+  });
+
+  it("enters the fast window immediately after a local write", () => {
+    const schedule = enterFastWindow({
+      config: TEST_SCHEDULE,
+      nowMs: 5_000,
+      reason: "local_write",
+    });
+    assert.equal(schedule.mode, "fast");
+    assert.equal(schedule.reason, "local_write");
+    assert.equal(schedule.intervalMs, 20_000);
+    assert.equal(schedule.fastUntil, 125_000);
   });
 });
 
@@ -197,13 +288,16 @@ describe("pollLibraryFingerprint", () => {
       hasConnection: async () => false,
     });
 
-    const result = await pollLibraryFingerprint(ctx.deps);
-
-    assert.deepEqual(result, {
-      status: "skipped",
-      reason: "not_connected",
-      polledAt: "2026-09-20T18:00:00.000Z",
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
     });
+
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "not_connected");
+    assert.equal(result.polledAt, "2026-09-20T18:00:00.000Z");
+    assert.equal(result.schedule.mode, "quiet");
+    assert.equal(result.schedule.intervalMs, 180_000);
     assert.equal(fetched, false);
     assert.equal(ctx.store.snapshot().lastPolledAt, "2026-09-20T18:00:00.000Z");
   });
@@ -219,9 +313,13 @@ describe("pollLibraryFingerprint", () => {
       lastFingerprint: fingerprint,
     });
 
-    const result = await pollLibraryFingerprint(ctx.deps);
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
 
     assert.equal(result.status, "unchanged");
+    assert.equal(result.schedule.mode, "quiet");
     assert.equal(ctx.syncCount(), 0);
     assert.deepEqual(ctx.store.snapshot().lastFingerprint, fingerprint);
     assert.equal(ctx.store.snapshot().events.length, 0);
@@ -251,9 +349,14 @@ describe("pollLibraryFingerprint", () => {
       lastFingerprint: previous,
     });
 
-    const result = await pollLibraryFingerprint(ctx.deps);
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
 
     assert.equal(result.status, "changed");
+    assert.equal(result.schedule.mode, "fast");
+    assert.equal(result.schedule.intervalMs, 20_000);
     assert.equal(ctx.syncCount(), 1);
     if (result.status !== "changed") {
       throw new Error("expected a changed poll result");
@@ -270,6 +373,7 @@ describe("pollLibraryFingerprint", () => {
       },
     ]);
     assert.deepEqual(ctx.store.snapshot().lastFingerprint, next);
+    assert.ok(ctx.store.snapshot().fastUntil);
     assert.equal(ctx.store.snapshot().events.length, 1);
     assert.equal(webhookCalls.length, 1);
     assert.equal(
@@ -289,7 +393,10 @@ describe("pollLibraryFingerprint", () => {
       lastFingerprint: previous,
     });
 
-    const result = await pollLibraryFingerprint(ctx.deps);
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
 
     assert.equal(result.status, "error");
     assert.deepEqual(ctx.store.snapshot().lastFingerprint, previous);
@@ -306,7 +413,10 @@ describe("pollLibraryFingerprint", () => {
       skeletonStore(next, [documentEntry("doc-1", "Journal", "100")]),
     );
 
-    const result = await pollLibraryFingerprint(ctx.deps);
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
 
     assert.equal(result.status, "changed");
     assert.equal(ctx.syncCount(), 1);
@@ -325,11 +435,92 @@ describe("pollLibraryFingerprint", () => {
     });
     ctx.setSkeleton(skeletonStore(fingerprint, []));
 
-    const result = await pollLibraryFingerprint(ctx.deps);
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
 
     assert.equal(result.status, "unchanged");
     assert.equal(ctx.syncCount(), 0);
     assert.deepEqual(ctx.store.snapshot().lastFingerprint, fingerprint);
+  });
+
+  it("coalesces a flapping root into one refresh pass and one event", async () => {
+    const previous = { hash: "root-a", generation: 1 };
+    const mid = { hash: "root-b", generation: 2 };
+    const final = { hash: "root-c", generation: 3 };
+    let fetches = 0;
+    const ctx = createPollDeps({
+      fetchRoot: async () => {
+        fetches += 1;
+        return fetches === 1 ? mid : final;
+      },
+    });
+    ctx.setSkeleton(
+      skeletonStore(previous, [documentEntry("doc-1", "Journal", "100")]),
+    );
+    let syncs = 0;
+    ctx.deps.syncSkeleton = async () => {
+      syncs += 1;
+      const fingerprint = syncs === 1 ? mid : final;
+      const next = skeletonStore(fingerprint, [
+        documentEntry("doc-1", "Journal", syncs === 1 ? "200" : "300"),
+      ]);
+      ctx.setSkeleton(next);
+      return next;
+    };
+    await ctx.store.write({
+      ...EMPTY_WATCH_STATE,
+      lastFingerprint: previous,
+    });
+
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
+
+    assert.equal(result.status, "changed");
+    assert.equal(syncs, 2);
+    if (result.status !== "changed") {
+      throw new Error("expected a changed poll result");
+    }
+    assert.deepEqual(result.event.previous, previous);
+    assert.deepEqual(result.event.current, final);
+    assert.deepEqual(result.event.changedDocuments, [
+      {
+        id: "doc-1",
+        name: "Journal",
+        change: "modified",
+        previousModified: "100",
+        lastModified: "300",
+      },
+    ]);
+    assert.equal(ctx.store.snapshot().events.length, 1);
+    assert.equal(result.schedule.mode, "fast");
+  });
+
+  it("backs off to quiet after unchanged polls past the fast window", async () => {
+    const fingerprint = { hash: "same-root", generation: 4 };
+    const ctx = createPollDeps({
+      fetchRoot: async () => fingerprint,
+      now: () => new Date("2026-09-20T18:03:00.000Z"),
+    });
+    ctx.setSkeleton(skeletonStore(fingerprint, []));
+    await ctx.store.write({
+      ...EMPTY_WATCH_STATE,
+      lastFingerprint: fingerprint,
+      fastUntil: "2026-09-20T18:02:00.000Z",
+    });
+
+    const result = await pollLibraryFingerprint({
+      ...ctx.deps,
+      scheduleConfig: TEST_SCHEDULE,
+    });
+
+    assert.equal(result.status, "unchanged");
+    assert.equal(result.schedule.mode, "quiet");
+    assert.equal(result.schedule.fastUntil, null);
+    assert.equal(ctx.store.snapshot().fastUntil, null);
   });
 });
 

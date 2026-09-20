@@ -58,6 +58,7 @@ function normalizeWatchState(value: unknown): LibraryWatchPersistedState {
     lastChangedAt:
       typeof raw.lastChangedAt === "string" ? raw.lastChangedAt : null,
     lastError: typeof raw.lastError === "string" ? raw.lastError : null,
+    fastUntil: typeof raw.fastUntil === "string" ? raw.fastUntil : null,
     events: Array.isArray(raw.events)
       ? raw.events.filter(isWatchEvent)
       : [],

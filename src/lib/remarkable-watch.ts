@@ -1,21 +1,29 @@
 import type {
   LibraryWatchDocumentChange,
   LibraryWatchEvent,
+  LibraryWatchIntervalMode,
   LibraryWatchPersistedState,
   RemarkableSkeletonStore,
   SyncRootFingerprint,
 } from "@/lib/types";
 
-export const DEFAULT_WATCH_INTERVAL_MS = 45_000;
+export const DEFAULT_WATCH_MIN_INTERVAL_MS = 20_000;
+export const DEFAULT_WATCH_MAX_INTERVAL_MS = 180_000;
+export const DEFAULT_WATCH_FAST_WINDOW_MS = 120_000;
 export const MIN_WATCH_INTERVAL_MS = 5_000;
 export const MAX_WATCH_EVENTS = 100;
 export const MAX_CHANGED_DOCUMENTS = 25;
+export const MAX_SKELETON_REFRESH_COALESCE = 3;
+
+/** @deprecated Use DEFAULT_WATCH_MAX_INTERVAL_MS — quiet baseline. */
+export const DEFAULT_WATCH_INTERVAL_MS = DEFAULT_WATCH_MAX_INTERVAL_MS;
 
 export const EMPTY_WATCH_STATE: LibraryWatchPersistedState = {
   lastFingerprint: null,
   lastPolledAt: null,
   lastChangedAt: null,
   lastError: null,
+  fastUntil: null,
   events: [],
 };
 
@@ -27,27 +35,52 @@ export type LibraryWatchPollStatus =
 
 export type LibraryWatchSkipReason = "not_connected";
 
-export type LibraryWatchPollResult =
+export type LibraryWatchScheduleReason =
+  | "cloud_change"
+  | "local_write"
+  | "quiet"
+  | "unchanged";
+
+export interface WatchScheduleConfig {
+  fastWindowMs: number;
+  maxIntervalMs: number;
+  minIntervalMs: number;
+}
+
+export interface WatchSchedule {
+  fastUntil: number | null;
+  intervalMs: number;
+  mode: LibraryWatchIntervalMode;
+  reason: LibraryWatchScheduleReason;
+}
+
+export interface LibraryWatchScheduleSnapshot {
+  fastUntil: string | null;
+  intervalMs: number;
+  mode: LibraryWatchIntervalMode;
+}
+
+export type LibraryWatchPollResult = {
+  polledAt: string;
+  schedule: LibraryWatchScheduleSnapshot;
+} & (
   | {
       status: "unchanged";
       fingerprint: SyncRootFingerprint;
-      polledAt: string;
     }
   | {
       status: "changed";
       event: LibraryWatchEvent;
-      polledAt: string;
     }
   | {
       status: "skipped";
       reason: LibraryWatchSkipReason;
-      polledAt: string;
     }
   | {
       status: "error";
       error: string;
-      polledAt: string;
-    };
+    }
+);
 
 export interface LibraryWatchPollDeps {
   createEventId: () => string;
@@ -58,6 +91,7 @@ export interface LibraryWatchPollDeps {
   notifyWebhook?: (url: string, event: LibraryWatchEvent) => Promise<void>;
   readSkeleton: () => Promise<RemarkableSkeletonStore | null>;
   readWatchState: () => Promise<LibraryWatchPersistedState>;
+  scheduleConfig?: WatchScheduleConfig;
   syncSkeleton: () => Promise<RemarkableSkeletonStore>;
   webhookUrl?: string | null;
   writeWatchState: (state: LibraryWatchPersistedState) => Promise<void>;
@@ -83,6 +117,20 @@ function parseBooleanFlag(value: string | undefined) {
 
 type EnvMap = Record<string, string | undefined>;
 
+function parsePositiveInt(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsed) || parsed < MIN_WATCH_INTERVAL_MS) {
+    return null;
+  }
+
+  return parsed;
+}
+
 export function isWatchEnabled(env: EnvMap = process.env) {
   const parsed = parseBooleanFlag(
     env.REMARKABLE_WATCH_ENABLED ?? env.RELAY_WATCH_ENABLED,
@@ -90,26 +138,126 @@ export function isWatchEnabled(env: EnvMap = process.env) {
   return parsed ?? true;
 }
 
+export function getWatchScheduleConfig(
+  env: EnvMap = process.env,
+): WatchScheduleConfig {
+  const minIntervalMs =
+    parsePositiveInt(
+      env.REMARKABLE_WATCH_MIN_INTERVAL_MS ?? env.RELAY_WATCH_MIN_INTERVAL_MS,
+    ) ?? DEFAULT_WATCH_MIN_INTERVAL_MS;
+  const maxIntervalMs =
+    parsePositiveInt(
+      env.REMARKABLE_WATCH_MAX_INTERVAL_MS ??
+        env.RELAY_WATCH_MAX_INTERVAL_MS ??
+        env.REMARKABLE_WATCH_INTERVAL_MS ??
+        env.RELAY_WATCH_INTERVAL_MS,
+    ) ?? DEFAULT_WATCH_MAX_INTERVAL_MS;
+  const fastWindowMs =
+    parsePositiveInt(
+      env.REMARKABLE_WATCH_FAST_WINDOW_MS ??
+        env.RELAY_WATCH_FAST_WINDOW_MS ??
+        env.REMARKABLE_WATCH_BACKOFF_MS ??
+        env.RELAY_WATCH_BACKOFF_MS,
+    ) ?? DEFAULT_WATCH_FAST_WINDOW_MS;
+
+  return {
+    fastWindowMs,
+    maxIntervalMs: Math.max(maxIntervalMs, minIntervalMs),
+    minIntervalMs,
+  };
+}
+
 export function getWatchIntervalMs(env: EnvMap = process.env) {
-  const raw = env.REMARKABLE_WATCH_INTERVAL_MS ?? env.RELAY_WATCH_INTERVAL_MS;
-
-  if (!raw) {
-    return DEFAULT_WATCH_INTERVAL_MS;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-
-  if (!Number.isFinite(parsed) || parsed < MIN_WATCH_INTERVAL_MS) {
-    return DEFAULT_WATCH_INTERVAL_MS;
-  }
-
-  return parsed;
+  return getWatchScheduleConfig(env).maxIntervalMs;
 }
 
 export function getWatchWebhookUrl(env: EnvMap = process.env) {
   const raw = env.REMARKABLE_WATCH_WEBHOOK_URL ?? env.RELAY_WATCH_WEBHOOK_URL;
   const trimmed = raw?.trim();
   return trimmed ? trimmed : null;
+}
+
+export function parseFastUntil(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+export function snapshotWatchSchedule(
+  schedule: WatchSchedule,
+): LibraryWatchScheduleSnapshot {
+  return {
+    fastUntil:
+      schedule.fastUntil == null
+        ? null
+        : new Date(schedule.fastUntil).toISOString(),
+    intervalMs: schedule.intervalMs,
+    mode: schedule.mode,
+  };
+}
+
+export function resolveWatchSchedule(input: {
+  config: WatchScheduleConfig;
+  fastUntil: number | null;
+  nowMs: number;
+  reason?: LibraryWatchScheduleReason;
+}): WatchSchedule {
+  const remaining =
+    input.fastUntil != null ? input.fastUntil - input.nowMs : 0;
+
+  if (remaining > 0) {
+    return {
+      fastUntil: input.fastUntil,
+      intervalMs: input.config.minIntervalMs,
+      mode: "fast",
+      reason: input.reason ?? "cloud_change",
+    };
+  }
+
+  return {
+    fastUntil: null,
+    intervalMs: input.config.maxIntervalMs,
+    mode: "quiet",
+    reason: input.reason ?? "quiet",
+  };
+}
+
+export function enterFastWindow(input: {
+  config: WatchScheduleConfig;
+  nowMs: number;
+  reason?: Extract<LibraryWatchScheduleReason, "cloud_change" | "local_write">;
+}): WatchSchedule {
+  return {
+    fastUntil: input.nowMs + input.config.fastWindowMs,
+    intervalMs: input.config.minIntervalMs,
+    mode: "fast",
+    reason: input.reason ?? "cloud_change",
+  };
+}
+
+export function advanceWatchSchedule(input: {
+  config: WatchScheduleConfig;
+  fastUntil: number | null;
+  nowMs: number;
+  observedChange: boolean;
+}): WatchSchedule {
+  if (input.observedChange) {
+    return enterFastWindow({
+      config: input.config,
+      nowMs: input.nowMs,
+      reason: "cloud_change",
+    });
+  }
+
+  return resolveWatchSchedule({
+    config: input.config,
+    fastUntil: input.fastUntil,
+    nowMs: input.nowMs,
+    reason: "unchanged",
+  });
 }
 
 export function fingerprintsEqual(
@@ -218,31 +366,77 @@ function appendEvent(
   return [event, ...events].slice(0, MAX_WATCH_EVENTS);
 }
 
+async function refreshSkeletonUntilStable(
+  deps: LibraryWatchPollDeps,
+  initialFingerprint: SyncRootFingerprint,
+) {
+  let fingerprint = initialFingerprint;
+  let skeleton = await deps.syncSkeleton();
+
+  for (let attempt = 0; attempt < MAX_SKELETON_REFRESH_COALESCE; attempt += 1) {
+    const latest = await deps.fetchRoot();
+
+    if (
+      fingerprintsEqual(latest, fingerprint) ||
+      fingerprintsEqual(latest, skeletonFingerprint(skeleton))
+    ) {
+      fingerprint = latest;
+      break;
+    }
+
+    fingerprint = latest;
+    skeleton = await deps.syncSkeleton();
+  }
+
+  return { fingerprint, skeleton };
+}
+
 export async function pollLibraryFingerprint(
   deps: LibraryWatchPollDeps,
 ): Promise<LibraryWatchPollResult> {
-  const polledAt = deps.now().toISOString();
+  const polledAtDate = deps.now();
+  const polledAt = polledAtDate.toISOString();
+  const nowMs = polledAtDate.getTime();
+  const config = deps.scheduleConfig ?? getWatchScheduleConfig();
   const log = deps.log ?? (() => undefined);
+
+  const scheduleFor = (
+    fastUntil: number | null,
+    observedChange: boolean,
+  ) =>
+    snapshotWatchSchedule(
+      advanceWatchSchedule({
+        config,
+        fastUntil,
+        nowMs,
+        observedChange,
+      }),
+    );
 
   try {
     const connected = await deps.hasConnection();
 
     if (!connected) {
       const state = await deps.readWatchState();
+      const schedule = scheduleFor(parseFastUntil(state.fastUntil), false);
       await deps.writeWatchState({
         ...state,
         lastPolledAt: polledAt,
+        fastUntil: schedule.fastUntil,
       });
       log({
         src: "remarkable-watch",
         event: "library.skipped",
         reason: "not_connected",
+        mode: schedule.mode,
+        intervalMs: schedule.intervalMs,
         polledAt,
       });
       return {
         status: "skipped",
         reason: "not_connected",
         polledAt,
+        schedule,
       };
     }
 
@@ -253,42 +447,50 @@ export async function pollLibraryFingerprint(
     ]);
     const previous =
       state.lastFingerprint ?? skeletonFingerprint(skeleton);
+    const incomingFastUntil = parseFastUntil(state.fastUntil);
 
     if (fingerprintsEqual(previous, current)) {
+      const schedule = scheduleFor(incomingFastUntil, false);
       await deps.writeWatchState({
         ...state,
         lastFingerprint: current,
         lastPolledAt: polledAt,
         lastError: null,
+        fastUntil: schedule.fastUntil,
       });
       log({
         src: "remarkable-watch",
         event: "library.unchanged",
         hash: current.hash,
         generation: current.generation,
+        mode: schedule.mode,
+        intervalMs: schedule.intervalMs,
         polledAt,
       });
       return {
         status: "unchanged",
         fingerprint: current,
         polledAt,
+        schedule,
       };
     }
 
-    const nextSkeleton = await deps.syncSkeleton();
+    const refreshed = await refreshSkeletonUntilStable(deps, current);
+    const schedule = scheduleFor(incomingFastUntil, true);
     const event: LibraryWatchEvent = {
       id: deps.createEventId(),
       detectedAt: polledAt,
       previous,
-      current,
-      changedDocuments: diffSkeletonDocuments(skeleton, nextSkeleton),
+      current: refreshed.fingerprint,
+      changedDocuments: diffSkeletonDocuments(skeleton, refreshed.skeleton),
     };
 
     await deps.writeWatchState({
-      lastFingerprint: current,
+      lastFingerprint: refreshed.fingerprint,
       lastPolledAt: polledAt,
       lastChangedAt: polledAt,
       lastError: null,
+      fastUntil: schedule.fastUntil,
       events: appendEvent(state.events, event),
     });
 
@@ -297,10 +499,13 @@ export async function pollLibraryFingerprint(
       event: "library.changed",
       previousHash: previous?.hash ?? null,
       previousGeneration: previous?.generation ?? null,
-      hash: current.hash,
-      generation: current.generation,
+      hash: refreshed.fingerprint.hash,
+      generation: refreshed.fingerprint.generation,
       detectedAt: polledAt,
       changedDocuments: event.changedDocuments,
+      mode: schedule.mode,
+      intervalMs: schedule.intervalMs,
+      fastUntil: schedule.fastUntil,
     });
 
     if (deps.webhookUrl && deps.notifyWebhook) {
@@ -320,16 +525,26 @@ export async function pollLibraryFingerprint(
       status: "changed",
       event,
       polledAt,
+      schedule,
     };
   } catch (error) {
     const message = errorMessage(error);
+    let schedule = snapshotWatchSchedule(
+      resolveWatchSchedule({
+        config,
+        fastUntil: null,
+        nowMs,
+      }),
+    );
 
     try {
       const state = await deps.readWatchState();
+      schedule = scheduleFor(parseFastUntil(state.fastUntil), false);
       await deps.writeWatchState({
         ...state,
         lastPolledAt: polledAt,
         lastError: message,
+        fastUntil: schedule.fastUntil,
       });
     } catch {
       // Persist the poll error when possible; the thrown path still logs.
@@ -339,6 +554,8 @@ export async function pollLibraryFingerprint(
       src: "remarkable-watch",
       event: "library.error",
       error: message,
+      mode: schedule.mode,
+      intervalMs: schedule.intervalMs,
       polledAt,
     });
 
@@ -346,6 +563,7 @@ export async function pollLibraryFingerprint(
       status: "error",
       error: message,
       polledAt,
+      schedule,
     };
   }
 }

@@ -20,7 +20,9 @@ export async function GET(request: Request) {
       lastFingerprint: state.lastFingerprint,
       lastPolledAt: state.lastPolledAt,
       lastChangedAt: state.lastChangedAt,
+      lastChangeEvent: state.events[0] ?? null,
       lastError: state.lastError,
+      fastUntil: runtime.fastUntil ?? state.fastUntil,
     },
     events: filterEventsSince(state.events, since),
   });

@@ -82,11 +82,14 @@ export interface LibraryWatchEvent {
   changedDocuments: LibraryWatchDocumentChange[];
 }
 
+export type LibraryWatchIntervalMode = "quiet" | "fast";
+
 export interface LibraryWatchPersistedState {
   lastFingerprint: SyncRootFingerprint | null;
   lastPolledAt: string | null;
   lastChangedAt: string | null;
   lastError: string | null;
+  fastUntil: string | null;
   events: LibraryWatchEvent[];
 }
 
