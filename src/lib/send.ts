@@ -4,6 +4,7 @@ import { createDocument, createJob, readState, updateJob } from "@/lib/state";
 import { prepareContent } from "@/lib/content-pipeline";
 import { createPdfFromHtml, createPdfFromText } from "@/lib/pdf";
 import { uploadPdf } from "@/lib/remarkable-client";
+import { notifyRemarkableLibraryWrite } from "@/lib/remarkable-watch-runtime";
 import { safeTitle } from "@/lib/utils";
 import type { SourceType } from "@/lib/types";
 
@@ -70,6 +71,7 @@ export async function sendContent(input: {
       title,
       pdfBytes,
     });
+    await notifyRemarkableLibraryWrite();
 
     await updateJob(job.id, {
       status: "uploaded",

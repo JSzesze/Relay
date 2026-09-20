@@ -13,6 +13,23 @@ export interface RootIndexResponse {
   generation: number;
 }
 
+export function parseRemarkableRootFingerprint(text: string): RootIndexResponse {
+  const root = JSON.parse(text) as RootIndexResponse;
+
+  if (typeof root.hash !== "string" || root.hash.length === 0) {
+    throw new Error("Connect root fingerprint was missing hash.");
+  }
+
+  if (typeof root.generation !== "number" || !Number.isFinite(root.generation)) {
+    throw new Error("Connect root fingerprint was missing generation.");
+  }
+
+  return {
+    hash: root.hash,
+    generation: root.generation,
+  };
+}
+
 export interface IndexEntry {
   hash: string;
   documentId: string;

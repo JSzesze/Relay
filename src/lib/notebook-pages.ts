@@ -21,6 +21,7 @@ import {
 } from "@/lib/remarkable-sync/records";
 import type { ContentRecord, MetadataRecord } from "@/lib/remarkable-sync/types";
 import { downloadBundleFiles, syncNotebookBundle } from "@/lib/remarkable-sync/write";
+import { notifyRemarkableLibraryWrite } from "@/lib/remarkable-watch-runtime";
 import { readRemarkableSkeleton } from "@/lib/remarkable-skeleton-store";
 import { createDocument, createJob, updateJob } from "@/lib/state";
 import type { RemarkableConnection, SourceType } from "@/lib/types";
@@ -298,6 +299,7 @@ export async function writeNotebookPages(
       documentId: bundle.documentId,
       files: bundle.files,
     });
+    await notifyRemarkableLibraryWrite();
     await updateJob(job.id, {
       status: "uploaded",
       uploadedAt: new Date().toISOString(),

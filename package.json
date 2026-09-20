@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3001",
     "build": "next build",
-    "start": "next start",
+    "start": "next start --hostname 127.0.0.1 --port 3001",
     "lint": "eslint",
-    "test": "tsx --test src/lib/remarkable-notebook-image.test.ts",
+    "test": "tsx --test src/lib/*.test.ts",
     "notebook": "tsx scripts/notebook-pages.ts"
   },
   "dependencies": {

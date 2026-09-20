@@ -6,9 +6,9 @@ import type { RemarkableConnection } from "@/lib/remarkable-sync/types";
 import type { NotebookBundleFile } from "@/lib/remarkable-notebook-bundle";
 import {
   parseIndexCollection,
+  parseRemarkableRootFingerprint,
   serializeIndexCollection,
   type IndexEntry,
-  type RootIndexResponse,
 } from "@/lib/remarkable-sync/types";
 
 function sha256Hex(bytes: Buffer | Uint8Array) {
@@ -99,9 +99,9 @@ export async function replaceRootDocumentEntry(params: {
 }) {
   const host =
     params.connection.tectonicHost ?? getUploadHost(params.connection.userToken);
-  const root = JSON.parse(
+  const root = parseRemarkableRootFingerprint(
     await fetchSyncText(params.connection, "/sync/v4/root"),
-  ) as RootIndexResponse;
+  );
   const rootBlob = await fetchSyncText(
     params.connection,
     `/sync/v3/files/${root.hash}`,
