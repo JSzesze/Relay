@@ -16,16 +16,20 @@ import {
 export async function fetchJsonRecord<T>(
   connection: RemarkableConnection,
   hash: string,
+  fileName?: string,
 ) {
-  const raw = await fetchSyncText(connection, `/sync/v3/files/${hash}`);
+  const raw = await fetchSyncText(connection, `/sync/v3/files/${hash}`, fileName);
   return JSON.parse(raw) as T;
 }
 
 export async function getBundleEntries(
   connection: RemarkableConnection,
   entryHash: string,
+  fileName?: string,
 ) {
-  return parseIndex(await fetchSyncText(connection, `/sync/v3/files/${entryHash}`));
+  return parseIndex(
+    await fetchSyncText(connection, `/sync/v3/files/${entryHash}`, fileName),
+  );
 }
 
 export async function getDocumentEntry(
@@ -35,7 +39,11 @@ export async function getDocumentEntry(
   const root = JSON.parse(
     await fetchSyncText(connection, "/sync/v4/root"),
   ) as RootIndexResponse;
-  const rootBlob = await fetchSyncText(connection, `/sync/v3/files/${root.hash}`);
+  const rootBlob = await fetchSyncText(
+    connection,
+    `/sync/v3/files/${root.hash}`,
+    "root.docSchema",
+  );
   const entry = parseIndex(rootBlob).find((item) => item.documentId === documentId);
 
   if (!entry) {
@@ -51,7 +59,11 @@ export async function downloadRemarkableNotebookPage(
   pageId: string,
 ) {
   const entry = await getDocumentEntry(connection, documentId);
-  const bundleEntries = await getBundleEntries(connection, entry.hash);
+  const bundleEntries = await getBundleEntries(
+    connection,
+    entry.hash,
+    `${documentId}.docSchema`,
+  );
   const pageEntry = getNotebookPageEntry(bundleEntries, documentId, pageId);
 
   if (!pageEntry) {
@@ -61,6 +73,7 @@ export async function downloadRemarkableNotebookPage(
   const response = await fetchSyncResponse(
     connection,
     `/sync/v3/files/${pageEntry.hash}`,
+    pageEntry.documentId,
   );
 
   return Buffer.from(await response.arrayBuffer());
@@ -81,7 +94,11 @@ export async function getPdfBackedPageSize(
     return null;
   }
 
-  const content = await fetchJsonRecord<ContentRecord>(connection, contentEntry.hash);
+  const content = await fetchJsonRecord<ContentRecord>(
+    connection,
+    contentEntry.hash,
+    contentEntry.documentId,
+  );
   const notebookPage = getNotebookPages(content).find((page) => page.id === pageId);
 
   if (notebookPage?.sourcePageIndex == null) {
@@ -99,6 +116,7 @@ export async function getPdfBackedPageSize(
   const response = await fetchSyncResponse(
     connection,
     `/sync/v3/files/${fileEntry.hash}`,
+    fileEntry.documentId,
   );
   const sourcePdf = await PDFDocument.load(await response.arrayBuffer());
 
@@ -129,7 +147,11 @@ export async function fetchMetadataForEntry(
   connection: RemarkableConnection,
   entry: IndexEntry,
 ) {
-  const bundleEntries = await getBundleEntries(connection, entry.hash);
+  const bundleEntries = await getBundleEntries(
+    connection,
+    entry.hash,
+    `${entry.documentId}.docSchema`,
+  );
   const metadataEntry = bundleEntries.find((bundleEntry) =>
     bundleEntry.documentId.endsWith(".metadata"),
   );
@@ -141,6 +163,7 @@ export async function fetchMetadataForEntry(
   const metadata = await fetchJsonRecord<MetadataRecord>(
     connection,
     metadataEntry.hash,
+    metadataEntry.documentId,
   );
 
   if (metadata.deleted) {

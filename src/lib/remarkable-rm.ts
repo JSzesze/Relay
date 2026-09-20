@@ -1,5 +1,3 @@
-import "server-only";
-
 const RM_HEADER_PREFIX = "reMarkable .lines file, version=";
 const RM_HEADER_LENGTH = 43;
 const DEFAULT_PAGE_WIDTH = 1404;
@@ -122,15 +120,35 @@ export interface RemarkableRmRenderGroup {
   anchor?: RemarkableRmGroupAnchor;
   children: RemarkableRmRenderGroup[];
   highlights: RemarkableRmHighlight[];
+  images: RemarkableRmImage[];
   label?: string;
   paths: RemarkableRmPath[];
   visible: boolean;
+}
+
+export interface RemarkableRmImageVertex {
+  x: number;
+  y: number;
+  u: number;
+  v: number;
+}
+
+export interface RemarkableRmImage {
+  fileName: string;
+  flags: number[];
+  height: number;
+  uuid: string;
+  vertices: RemarkableRmImageVertex[];
+  width: number;
+  x: number;
+  y: number;
 }
 
 export interface RemarkableRmPage {
   version: number;
   layers: RemarkableRmLayer[];
   groups?: RemarkableRmRenderGroup[];
+  images: RemarkableRmImage[];
   minX: number;
   minY: number;
   maxX: number;
@@ -469,6 +487,15 @@ class V6Reader {
     })) satisfies LwwValue<string>;
   }
 
+  readLwwBytes(index: number) {
+    return this.readSubblock(index, () => ({
+      timestamp: this.readId(1),
+      value: this.readSubblock(2, (end) =>
+        Array.from(this.readBytes(end - this.tell())),
+      ),
+    })) satisfies LwwValue<number[]>;
+  }
+
   readSubblock<T>(index: number, reader: (end: number) => T) {
     this.readTag(index, TagType.Length4);
     const length = this.readUint32();
@@ -731,6 +758,45 @@ function crdtIdKey(value: CrdtId) {
   return `${value.part1}:${value.part2}`;
 }
 
+export function formatUuidBytes(bytes: Buffer | Uint8Array) {
+  const hex = Buffer.from(bytes).toString("hex");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join("-");
+}
+
+function parseImageVertices(values: number[]) {
+  const vertices: RemarkableRmImageVertex[] = [];
+
+  for (let index = 0; index + 3 < values.length; index += 4) {
+    vertices.push({
+      x: values[index] ?? 0,
+      y: values[index + 1] ?? 0,
+      u: values[index + 2] ?? 0,
+      v: values[index + 3] ?? 0,
+    });
+  }
+
+  const xs = vertices.map((vertex) => vertex.x);
+  const ys = vertices.map((vertex) => vertex.y);
+  const minX = xs.length > 0 ? Math.min(...xs) : 0;
+  const minY = ys.length > 0 ? Math.min(...ys) : 0;
+  const maxX = xs.length > 0 ? Math.max(...xs) : 0;
+  const maxY = ys.length > 0 ? Math.max(...ys) : 0;
+
+  return {
+    height: maxY - minY,
+    vertices,
+    width: maxX - minX,
+    x: minX,
+    y: minY,
+  };
+}
+
 function compareCrdtIds(left: CrdtId, right: CrdtId) {
   if (left.part1 !== right.part1) {
     return left.part1 - right.part1;
@@ -792,6 +858,7 @@ function parseLegacyRemarkableRmPage(buffer: Buffer, version: number) {
 
   return {
     version,
+    images: [],
     layers,
     minX: Number.isFinite(minX) ? minX : 0,
     minY: Number.isFinite(minY) ? minY : 0,
@@ -1431,6 +1498,7 @@ function buildRenderGroup(
   nodeId: CrdtId,
   childGroupsByParent: Map<string, Array<SequenceItem<CrdtId>>>,
   glyphsByParent: Map<string, Array<SequenceItem<RemarkableRmHighlight>>>,
+  imagesByParent: Map<string, Array<SequenceItem<RemarkableRmImage>>>,
   linesByParent: Map<string, Array<SequenceItem<RemarkableRmPath>>>,
   nodeMeta: Map<string, V6TreeNodeMeta>,
 ): RemarkableRmRenderGroup {
@@ -1444,6 +1512,7 @@ function buildRenderGroup(
         item.value,
         childGroupsByParent,
         glyphsByParent,
+        imagesByParent,
         linesByParent,
         nodeMeta,
       ),
@@ -1452,6 +1521,9 @@ function buildRenderGroup(
       (item) => item.value,
     ),
     id: nodeId,
+    images: toposortItems(imagesByParent.get(nodeKey) ?? []).map(
+      (item) => item.value,
+    ),
     label: meta?.label,
     paths: toposortItems(linesByParent.get(nodeKey) ?? []).map((item) => item.value),
     visible: meta?.visible ?? true,
@@ -1464,6 +1536,8 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
 
   const childGroupsByParent = new Map<string, Array<SequenceItem<CrdtId>>>();
   const glyphsByParent = new Map<string, Array<SequenceItem<RemarkableRmHighlight>>>();
+  const imagesByParent = new Map<string, Array<SequenceItem<RemarkableRmImage>>>();
+  const imageInfoByUuid = new Map<string, { fileName: string; flags: number[] }>();
   const linesByParent = new Map<string, Array<SequenceItem<RemarkableRmPath>>>();
   const nodeMeta = new Map<string, V6TreeNodeMeta>();
   let minX = Number.POSITIVE_INFINITY;
@@ -1588,11 +1662,33 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
         continue;
       }
 
+      if (blockType === 0x0e) {
+        reader.readSubblock(1, () => {
+          const count = reader.readVarUint();
+          for (let index = 0; index < count; index += 1) {
+            reader.readSubblock(0, () => {
+              const uuid = formatUuidBytes(reader.readBytes(16));
+              const fileName = reader.readLwwString(1).value;
+              const flags = reader.checkTag(2, TagType.Length4)
+                ? reader.readLwwBytes(2).value
+                : [];
+              imageInfoByUuid.set(uuid, { fileName, flags });
+            });
+          }
+        });
+        continue;
+      }
+
       if (blockType === 0x06 || blockType === 0x08) {
         continue;
       }
 
-      if (blockType === 0x03 || blockType === 0x04 || blockType === 0x05) {
+      if (
+        blockType === 0x03 ||
+        blockType === 0x04 ||
+        blockType === 0x05 ||
+        blockType === 0x0f
+      ) {
         const parentId = reader.readId(1);
         const itemId = reader.readId(2);
         const leftId = reader.readId(3);
@@ -1627,6 +1723,39 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
               kind: "line",
               itemType,
               value: parseV6Line(reader, currentVersion),
+            } as const;
+          }
+
+          if (blockType === 0x0f && itemType === 0x07) {
+            const uuidBytes = reader.readLwwBytes(1).value;
+            if (reader.checkTag(2, TagType.Id)) {
+              reader.readId(2);
+            }
+            const vertexValues = reader.readSubblock(3, () => {
+              const count = reader.readVarUint();
+              const values: number[] = [];
+              for (let index = 0; index < count; index += 1) {
+                values.push(reader.readFloat32());
+              }
+              return values;
+            });
+            if (reader.checkTag(4, TagType.Length4)) {
+              reader.readSubblock(4, () => undefined);
+            }
+
+            const uuid = formatUuidBytes(Uint8Array.from(uuidBytes));
+            const info = imageInfoByUuid.get(uuid);
+            const placement = parseImageVertices(vertexValues);
+
+            return {
+              kind: "image",
+              itemType,
+              value: {
+                fileName: info?.fileName ?? `${uuid}.png`,
+                flags: info?.flags ?? [],
+                uuid,
+                ...placement,
+              } satisfies RemarkableRmImage,
             } as const;
           }
 
@@ -1681,6 +1810,25 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
           continue;
         }
 
+        if (sceneItem.kind === "image") {
+          const parentKey = crdtIdKey(parentId);
+          if (!imagesByParent.has(parentKey)) {
+            imagesByParent.set(parentKey, []);
+          }
+          imagesByParent.get(parentKey)!.push({
+            deletedLength,
+            itemId,
+            leftId,
+            rightId,
+            value: sceneItem.value,
+          });
+          minX = Math.min(minX, sceneItem.value.x);
+          minY = Math.min(minY, sceneItem.value.y);
+          maxX = Math.max(maxX, sceneItem.value.x + sceneItem.value.width);
+          maxY = Math.max(maxY, sceneItem.value.y + sceneItem.value.height);
+          continue;
+        }
+
         const parentKey = crdtIdKey(parentId);
         if (!linesByParent.has(parentKey)) {
           linesByParent.set(parentKey, []);
@@ -1714,6 +1862,7 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
             group.value,
             childGroupsByParent,
             glyphsByParent,
+            imagesByParent,
             linesByParent,
             nodeMeta,
           ),
@@ -1726,6 +1875,7 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
                   group.value,
                   childGroupsByParent,
                   glyphsByParent,
+                  imagesByParent,
                   linesByParent,
                   nodeMeta,
                 ),
@@ -1734,12 +1884,17 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
               (item) => item.value,
             ),
             id: { part1: 0, part2: 1 },
+            images: toposortItems(imagesByParent.get(rootKey) ?? []).map(
+              (item) => item.value,
+            ),
             paths: toposortItems(linesByParent.get(rootKey) ?? []).map(
               (item) => item.value,
             ),
             visible: true,
           } satisfies RemarkableRmRenderGroup,
         ];
+
+  const images = collectRenderImages(groups);
 
   const textLayout = buildTextLayout(text);
   const textMaxX = text ? text.posX + text.width : 0;
@@ -1752,6 +1907,7 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
 
   return {
     groups,
+    images,
     layers: [],
     minX: Number.isFinite(Math.min(minX, textMinX))
       ? Math.min(minX, textMinX)
@@ -1765,6 +1921,23 @@ function parseV6RemarkableRmPage(buffer: Buffer) {
     text,
     version: 6,
   } satisfies RemarkableRmPage;
+}
+
+function collectRenderImages(groups: RemarkableRmRenderGroup[]) {
+  const images: RemarkableRmImage[] = [];
+
+  function visit(group: RemarkableRmRenderGroup) {
+    images.push(...group.images);
+    for (const child of group.children) {
+      visit(child);
+    }
+  }
+
+  for (const group of groups) {
+    visit(group);
+  }
+
+  return images;
 }
 
 function renderPath(path: RemarkableRmPath) {
@@ -1781,6 +1954,16 @@ function renderPath(path: RemarkableRmPath) {
   )}" stroke-width="${getStrokeWidth(path).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" points="${escapeXml(
     points,
   )}" />`;
+}
+
+function renderImage(image: RemarkableRmImage) {
+  return `<rect x="${image.x.toFixed(2)}" y="${image.y.toFixed(
+    2,
+  )}" width="${image.width.toFixed(2)}" height="${image.height.toFixed(
+    2,
+  )}" fill="#dbe4ee" stroke="#5b6b7c" stroke-width="2" data-image-uuid="${escapeXml(
+    image.uuid,
+  )}" data-image-file="${escapeXml(image.fileName)}" />`;
 }
 
 function renderHighlight(highlight: RemarkableRmHighlight) {
@@ -1935,6 +2118,16 @@ function getGroupBounds(
     mergeBounds(bounds, getHighlightBounds(highlight, offsetX, offsetY));
   }
 
+  for (const image of group.images) {
+    includeRect(
+      bounds,
+      image.x + offsetX,
+      image.y + offsetY,
+      image.width,
+      image.height,
+    );
+  }
+
   for (const child of group.children) {
     mergeBounds(bounds, getGroupBounds(child, text, textLayout, offsetX, offsetY));
   }
@@ -1956,14 +2149,17 @@ function renderGroup(
     .map((child) => renderGroup(child, text, textLayout))
     .join("");
   const highlights = group.highlights.map(renderHighlight).join("");
+  const images = group.images.map(renderImage).join("");
   const paths = group.paths.map(renderPath).join("");
 
   return `<g data-group="${escapeXml(
     crdtIdKey(group.id),
-  )}" transform="translate(${transform.x.toFixed(2)} ${transform.y.toFixed(2)})">${highlights}${paths}${children}</g>`;
+  )}" transform="translate(${transform.x.toFixed(2)} ${transform.y.toFixed(2)})">${highlights}${images}${paths}${children}</g>`;
 }
 
-export function parseRemarkableRmPage(input: Buffer | ArrayBuffer) {
+export function parseRemarkableRmPage(
+  input: Buffer | ArrayBuffer,
+): RemarkableRmPage {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
 
   if (buffer.byteLength < RM_HEADER_LENGTH + 4) {

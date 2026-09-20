@@ -66,7 +66,11 @@ export async function syncRemarkableSkeleton() {
   const root = JSON.parse(
     await fetchSyncText(connection, "/sync/v4/root"),
   ) as RootIndexResponse;
-  const rootBlob = await fetchSyncText(connection, `/sync/v3/files/${root.hash}`);
+  const rootBlob = await fetchSyncText(
+    connection,
+    `/sync/v3/files/${root.hash}`,
+    "root.docSchema",
+  );
   const entries = parseIndex(rootBlob);
 
   const resolvedEntries = await mapLimit(entries, 8, async (entry) =>
@@ -100,7 +104,7 @@ export async function syncRemarkableSkeleton() {
 export async function fetchRemarkableDocumentDetail(documentId: string) {
   const connection = await ensureFreshConnection();
   const entry = await getDocumentEntry(connection, documentId);
-  const bundleEntries = await getBundleEntries(connection, entry.hash);
+  const bundleEntries = await getBundleEntries(connection, entry.hash, `${documentId}.docSchema`);
   const metadataEntry = bundleEntries.find((bundleEntry) =>
     bundleEntry.documentId.endsWith(".metadata"),
   );
@@ -115,9 +119,14 @@ export async function fetchRemarkableDocumentDetail(documentId: string) {
   const metadata = await fetchJsonRecord<MetadataRecord>(
     connection,
     metadataEntry.hash,
+    metadataEntry.documentId,
   );
   const content = contentEntry
-    ? await fetchJsonRecord<ContentRecord>(connection, contentEntry.hash)
+    ? await fetchJsonRecord<ContentRecord>(
+        connection,
+        contentEntry.hash,
+        contentEntry.documentId,
+      )
     : null;
 
   const detail: RemarkableDocumentDetail = {
@@ -153,7 +162,7 @@ export async function fetchRemarkableDocumentDetail(documentId: string) {
 export async function downloadRemarkableDocument(documentId: string) {
   const connection = await ensureFreshConnection();
   const entry = await getDocumentEntry(connection, documentId);
-  const bundleEntries = await getBundleEntries(connection, entry.hash);
+  const bundleEntries = await getBundleEntries(connection, entry.hash, `${documentId}.docSchema`);
   const metadataEntry = bundleEntries.find((bundleEntry) =>
     bundleEntry.documentId.endsWith(".metadata"),
   );
@@ -178,10 +187,12 @@ export async function downloadRemarkableDocument(documentId: string) {
   const metadata = await fetchJsonRecord<MetadataRecord>(
     connection,
     metadataEntry.hash,
+    metadataEntry.documentId,
   );
   const response = await fetchSyncResponse(
     connection,
     `/sync/v3/files/${fileEntry.hash}`,
+    fileEntry.documentId,
   );
   const bytes = Buffer.from(await response.arrayBuffer());
   const fileStem = sanitizeFileStem(metadata.visibleName || documentId);
@@ -328,7 +339,7 @@ export async function renderRemarkableNotebookPageSvg(
 ) {
   const connection = await ensureFreshConnection();
   const entry = await getDocumentEntry(connection, documentId);
-  const bundleEntries = await getBundleEntries(connection, entry.hash);
+  const bundleEntries = await getBundleEntries(connection, entry.hash, `${documentId}.docSchema`);
   const pageEntry = getNotebookPageEntry(bundleEntries, documentId, pageId);
 
   if (!pageEntry) {
@@ -338,6 +349,7 @@ export async function renderRemarkableNotebookPageSvg(
   const response = await fetchSyncResponse(
     connection,
     `/sync/v3/files/${pageEntry.hash}`,
+    pageEntry.documentId,
   );
   const page = parseRemarkableRmPage(Buffer.from(await response.arrayBuffer()));
   const pageSize =
