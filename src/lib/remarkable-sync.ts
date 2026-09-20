@@ -31,12 +31,12 @@ import {
 import {
   type ContentRecord,
   type MetadataRecord,
-  type RootIndexResponse,
   getDocumentBundleAsset,
   getNotebookPageEntry,
   getNotebookPages,
   mapLimit,
   parseIndex,
+  parseRemarkableRootFingerprint,
   toPageTag,
   toSkeletonEntry,
   toTag,
@@ -61,11 +61,20 @@ function sanitizeFileStem(value: string) {
     .trim();
 }
 
+export { parseRemarkableRootFingerprint };
+
+export async function fetchRemarkableRootFingerprint() {
+  const connection = await ensureFreshConnection();
+  return parseRemarkableRootFingerprint(
+    await fetchSyncText(connection, "/sync/v4/root"),
+  );
+}
+
 export async function syncRemarkableSkeleton() {
   const connection = await ensureFreshConnection();
-  const root = JSON.parse(
+  const root = parseRemarkableRootFingerprint(
     await fetchSyncText(connection, "/sync/v4/root"),
-  ) as RootIndexResponse;
+  );
   const rootBlob = await fetchSyncText(
     connection,
     `/sync/v3/files/${root.hash}`,

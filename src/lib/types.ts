@@ -59,6 +59,37 @@ export interface RemarkableSkeletonStore {
   documents: RemarkableDocumentSkeleton[];
 }
 
+export interface SyncRootFingerprint {
+  hash: string;
+  generation: number;
+}
+
+export type LibraryWatchDocumentChangeKind = "added" | "modified" | "removed";
+
+export interface LibraryWatchDocumentChange {
+  id: string;
+  name: string;
+  change: LibraryWatchDocumentChangeKind;
+  previousModified?: string;
+  lastModified?: string;
+}
+
+export interface LibraryWatchEvent {
+  id: string;
+  detectedAt: string;
+  previous: SyncRootFingerprint | null;
+  current: SyncRootFingerprint;
+  changedDocuments: LibraryWatchDocumentChange[];
+}
+
+export interface LibraryWatchPersistedState {
+  lastFingerprint: SyncRootFingerprint | null;
+  lastPolledAt: string | null;
+  lastChangedAt: string | null;
+  lastError: string | null;
+  events: LibraryWatchEvent[];
+}
+
 export interface RemarkableDocumentDetail {
   id: string;
   name: string;
