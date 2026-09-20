@@ -81,14 +81,16 @@ function parseBooleanFlag(value: string | undefined) {
   return null;
 }
 
-export function isWatchEnabled(env: NodeJS.ProcessEnv = process.env) {
+type EnvMap = Record<string, string | undefined>;
+
+export function isWatchEnabled(env: EnvMap = process.env) {
   const parsed = parseBooleanFlag(
     env.REMARKABLE_WATCH_ENABLED ?? env.RELAY_WATCH_ENABLED,
   );
   return parsed ?? true;
 }
 
-export function getWatchIntervalMs(env: NodeJS.ProcessEnv = process.env) {
+export function getWatchIntervalMs(env: EnvMap = process.env) {
   const raw = env.REMARKABLE_WATCH_INTERVAL_MS ?? env.RELAY_WATCH_INTERVAL_MS;
 
   if (!raw) {
@@ -104,7 +106,7 @@ export function getWatchIntervalMs(env: NodeJS.ProcessEnv = process.env) {
   return parsed;
 }
 
-export function getWatchWebhookUrl(env: NodeJS.ProcessEnv = process.env) {
+export function getWatchWebhookUrl(env: EnvMap = process.env) {
   const raw = env.REMARKABLE_WATCH_WEBHOOK_URL ?? env.RELAY_WATCH_WEBHOOK_URL;
   const trimmed = raw?.trim();
   return trimmed ? trimmed : null;
